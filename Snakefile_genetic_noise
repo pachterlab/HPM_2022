@@ -2,7 +2,6 @@ import secrets
 import string
 import random
 
-from scripts.aggregate_reads import aggregate_reads
 from scripts.subsample_reads import subsample_reads
 
 shell.executable('/usr/bin/zsh')
