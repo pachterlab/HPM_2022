@@ -1,0 +1,97 @@
+
+import secrets
+import string
+import random
+
+from scripts.aggregate_reads import aggregate_reads
+from scripts.subsample_reads import subsample_reads
+
+shell.executable('/opt/homebrew/bin/zsh')
+
+N = 10000
+eta = 0.10
+
+def generate_pns(N, out_wt, out_aff):
+  # N_aff = int(N * eta)
+  # N_ctl = N - N_aff
+  N_ctl = N
+  N_aff = N
+  alphabet = string.ascii_letters + string.digits
+  pns_wildtype = (''.join(secrets.choice(alphabet) for _ in range(7)).upper() for _ in range(N_ctl))
+  pns_affected = (''.join(secrets.choice(alphabet) for _ in range(7)).upper() for _ in range(N_aff))
+  with open(out_wt, 'w') as fh:
+    fh.write('\n'.join(pns_wildtype))
+  with open(out_aff, 'w') as fh:
+    fh.write('\n'.join(pns_affected))
+
+rule all:
+  input:
+    expand("noise_subsampled_associations/{i}/{N}/noise{noise}/assoc_ctl990_aff10", N=range(6,19,4), i=range(1000), noise=('0.010000', '0.020000', '0.030000', '0.040000', '0.050000', '0.060000','0.070000','0.080000','0.090000','0.100000',))
+
+rule generate_pns:
+  output:
+    wt="pns/pns_wildtype_{N}",
+    aff="pns/pns_affected_{N}"
+  run:
+    generate_pns(int(f'{wildcards.N}'), f'{output.wt}', f'{output.aff}')
+
+rule generate_reads:
+  params:
+    typ = lambda w: 'ref' if w.category == 'wildtype' else 'alt'
+  output:
+    "reads/{type}/{N}/{pn}_{category}.R1.fq",
+  shell:
+    "bbmap/randomreads.sh seed=-1 ref=data/txome_{params.typ}_ENSG00000135940_D.fa paired=f adderrors=f q=36 out=reads/{wildcards.type}/{wildcards.N}/{wildcards.pn}_{wildcards.category}.R1.fq minlen=150 maxlen=150 reads={wildcards.N}"
+
+rule subsample_pns:
+  input:
+    ctl="pns/pns_wildtype_4000",
+    aff="pns/pns_affected_4000"
+  output:
+    ctl="pns_subsampled/control_{ctl}-{aff}",
+    aff="pns_subsampled/affected_{ctl}-{aff}"
+  run:
+    with open(input.ctl) as fh:
+      pns_ctl = random.sample(fh.readlines(), int(wildcards.ctl))
+      with open(output.ctl, 'w') as out:
+        out.write(''.join(pns_ctl))
+    with open(input.aff) as fh:
+      pns_aff = random.sample(fh.readlines(), int(wildcards.aff))
+      with open(output.aff, 'w') as out:
+        out.write(''.join(pns_aff))
+
+rule subsample_reads:
+  input:
+    ctl="pns_subsampled/control_{ctl}-{aff}",
+    aff="pns_subsampled/affected_{ctl}-{aff}"
+  output:
+    expand("subsampled_reads/{{i}}/reads_ctl{{ctl}}_aff{{aff}}_N:{N}", N=range(51))
+  run:
+    subsample_reads(input.ctl, input.aff, f'{output}')
+
+rule agnostic_quant:
+  input:
+    "subsampled_reads/{i}/reads_ctl{ctl}_aff{aff}_N:{N}"
+  output:
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.010000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.020000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.030000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.040000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.050000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.060000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.070000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.080000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.090000/pn2count.normalized",
+    "noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise0.100000/pn2count.normalized"
+  shell:
+    "../AAQuant/AAQuant -v -t 1 -f {input} --noise-step 0.01 --noise-ub 0.1 -o noise_subsampled_quant/{wildcards.i}/ctl{wildcards.ctl}_aff{wildcards.aff}_N{wildcards.N}/"
+
+rule run_assoc_bin:
+  input:
+    counts="noise_subsampled_quant/{i}/ctl{ctl}_aff{aff}_N{N}/noise{noise}/pn2count.normalized",
+    ctl="pns_subsampled/control_{ctl}-{aff}",
+    aff="pns_subsampled/affected_{ctl}-{aff}"
+  output:
+    "noise_subsampled_associations/{i}/{N}/noise{noise}/assoc_ctl{ctl}_aff{aff}"
+  shell:
+    "Rscript --vanilla ../AAQuant/assoc/assoc_binary.R {input.counts} {input.aff} {input.ctl} {output}"
